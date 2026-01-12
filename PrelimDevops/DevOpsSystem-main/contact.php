@@ -116,10 +116,20 @@ require_once __DIR__ . '/config/site.php';
 
 /* Prevent copying/selecting of specific elements */
 .no-copy {
-  -webkit-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+  -webkit-user-drag: none !important;
+  pointer-events: none !important;
+}
+#captchaDisplay.no-copy {
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  pointer-events: none !important;
 }
 </style>
 
@@ -185,7 +195,7 @@ require_once __DIR__ . '/config/site.php';
           <input type="email" name="email" class="form-control mb-3" required>
 
           <!-- Message -->
-          <label>Message</label>
+          <label>lagyu</label>
           <textarea name="message" class="form-control mb-3" rows="4" required></textarea>
 
           <!-- Captcha -->
