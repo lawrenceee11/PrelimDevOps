@@ -113,6 +113,14 @@ require_once __DIR__ . '/config/site.php';
   font-weight: 500;
   color: #333;
 }
+
+/* Prevent copying/selecting of specific elements */
+.no-copy {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
 </style>
 
 <nav class="navbar navbar-expand-sm bg-light navbar-light" 
@@ -168,29 +176,36 @@ require_once __DIR__ . '/config/site.php';
         <h4 class="mb-3">Send us a message</h4>
 
         <form action="config/addContact.php" method="POST">
+          <!-- Name -->
           <label>Name</label>
           <input type="text" name="name" class="form-control mb-3" required>
 
+          <!-- Email -->
           <label>Email</label>
           <input type="email" name="email" class="form-control mb-3" required>
 
+          <!-- Message -->
           <label>Message</label>
           <textarea name="message" class="form-control mb-3" rows="4" required></textarea>
 
+          <!-- Captcha -->
           <label>Captcha</label>
           <div class="row mb-2">
-            <div class="col">
-              <p id="captchaDisplay" class="fw-bold fs-5"></p>
+            <div class="col d-flex align-items-center">
+              <p id="captchaDisplay" class="fw-bold fs-5 no-copy me-2" aria-hidden="true"></p>
+              <button type="button" id="refreshCaptchaBtn" class="btn btn-sm btn-secondary">↻</button>
             </div>
             <div class="col">
               <input type="text" id="captchaInput" name="captcha" class="form-control" required>
             </div>
           </div>
 
+          <!-- Error message -->
           <div id="captchaError" class="text-danger mb-2" style="display:none;">
             Captcha code is incorrect.
           </div>
 
+          <!-- Success message -->
           <?php
           if (isset($_SESSION['success'])){
             echo '<div class="text-success mb-2">'.$_SESSION['success'].'</div>';
@@ -198,13 +213,14 @@ require_once __DIR__ . '/config/site.php';
           }
           ?>
 
+          <!-- Send Button -->
           <button id="sendBtn" type="button" class="btn btn-primary px-4">
             Send Message
           </button>
         </form>
       </div>
 
-      <!-- INFO -->
+      <!-- INFO CARDS -->
       <div class="col-md-5">
         <div class="row g-3">
           <div class="col-12 info-card">
@@ -230,33 +246,57 @@ require_once __DIR__ . '/config/site.php';
   </div>
 </div>
 
-<<script>
-const captchaChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&!";
-let captchaCode = "";
+<!-- JS -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  const captchaChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%&!";
+  const captchaDisplayEl = document.getElementById('captchaDisplay');
+  const sendBtn = document.getElementById('sendBtn');
+  const refreshBtn = document.getElementById('refreshCaptchaBtn');
+  let captchaCode = "";
 
-function generateCaptcha(length = 6) {
-  let result = "";
-  for (let i = 0; i < length; i++) {
-    result += captchaChars.charAt(
-      Math.floor(Math.random() * captchaChars.length)
-    );
+  // Generate captcha
+  function generateCaptcha(length = 6) {
+    let result = "";
+    for (let i = 0; i < length; i++) {
+      result += captchaChars.charAt(Math.floor(Math.random() * captchaChars.length));
+    }
+    return result;
   }
-  return result;
-}
 
-// Generate captcha on load
-captchaCode = generateCaptcha();
-document.getElementById('captchaDisplay').textContent = captchaCode;
-
-document.getElementById('sendBtn').addEventListener('click', function() {
-  const userInput = document.getElementById('captchaInput').value.trim();
-
-  if (userInput === captchaCode) {
-    document.querySelector('form').submit();
-  } else {
-    document.getElementById('captchaError').style.display = 'block';
+  // Refresh captcha
+  function refreshCaptcha() {
     captchaCode = generateCaptcha();
-    document.getElementById('captchaDisplay').textContent = captchaCode;
+    captchaDisplayEl.textContent = captchaCode;
+    document.getElementById('captchaInput').value = ""; // clear input
+    document.getElementById('captchaError').style.display = 'none'; // hide error
   }
+
+  // Initial captcha
+  refreshCaptcha();
+
+  // Prevent copying/selecting
+  captchaDisplayEl.addEventListener('copy', e => e.preventDefault());
+  captchaDisplayEl.addEventListener('cut', e => e.preventDefault());
+  captchaDisplayEl.addEventListener('contextmenu', e => e.preventDefault());
+  captchaDisplayEl.addEventListener('selectstart', e => e.preventDefault());
+  captchaDisplayEl.onmousedown = () => false;
+
+  // Refresh button click
+  refreshBtn.addEventListener('click', refreshCaptcha);
+
+  // Send button click
+  sendBtn.addEventListener('click', function() {
+    const userInput = document.getElementById('captchaInput').value.trim();
+
+    if (userInput === captchaCode) {
+      document.querySelector('form').submit();
+    } else {
+      const errorEl = document.getElementById('captchaError');
+      errorEl.style.display = 'block';
+      errorEl.textContent = "Captcha code is incorrect. Try again!";
+      refreshCaptcha(); // generate new captcha
+    }
+  });
 });
 </script>
