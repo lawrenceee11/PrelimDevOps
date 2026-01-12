@@ -1,212 +1,206 @@
 <?php
-SESSION_START();
+session_start();
 include 'config/plugins.php';
 require 'config/dbcon.php';
 
-// Check if username is provided
+// ==========================
+// CHECK USERNAME
+// ==========================
 if (!isset($_GET['username']) || empty($_GET['username'])) {
     die("Invalid student.");
 }
-
 $username = $conn->real_escape_string($_GET['username']);
 
 // ==========================
 // GET STUDENT INFO
 // ==========================
-$student_sql = "SELECT firstname, lastname, course, year, section FROM enroll WHERE username='$username' LIMIT 1";
+$student_sql = "SELECT firstname, lastname, course, year, section 
+                FROM enroll 
+                WHERE username='$username' LIMIT 1";
 $student_result = $conn->query($student_sql);
 if (!$student_result || $student_result->num_rows === 0) die("Student not found.");
 $student = $student_result->fetch_assoc();
 
 // ==========================
-// HANDLE DELETE REQUEST (AJAX or form)
+// FETCH SUBJECTS (AUTO)
+// ==========================
+$subjects = [];
+$subj = $conn->prepare(
+    "SELECT name, instructor 
+     FROM subjects 
+     WHERE course = ? AND year_level = ?
+     ORDER BY name"
+);
+$subj->bind_param("ss", $student['course'], $student['year']);
+$subj->execute();
+$res = $subj->get_result();
+while ($r = $res->fetch_assoc()) {
+    $subjects[] = $r;
+}
+$subj->close();
+
+// ==========================
+// DELETE GRADE (AJAX)
 // ==========================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_id'])) {
     $del_id = intval($_POST['delete_id']);
-    // accept posted username fallback so AJAX can send it in POST body
-    $posted_username = isset($_POST['username']) ? $conn->real_escape_string($_POST['username']) : null;
-    $target_username = $posted_username ?: $username;
-
     $d = $conn->prepare("DELETE FROM grades WHERE id = ? AND username = ?");
-    if ($d) {
-        $d->bind_param('is', $del_id, $target_username);
-        $d->execute();
-        $affected = $d->affected_rows;
-        $d->close();
-
-        // Clean any buffered output to ensure valid JSON
-        while (ob_get_level()) ob_end_clean();
-        header('Content-Type: application/json');
-
-        if ($affected > 0) {
-            http_response_code(200);
-            echo json_encode(['success' => true, 'message' => 'Grade deleted']);
-            exit;
-        } else {
-            http_response_code(404);
-            echo json_encode(['success' => false, 'message' => 'Not found or not authorized']);
-            exit;
-        }
-    } else {
-        while (ob_get_level()) ob_end_clean();
-        header('Content-Type: application/json');
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Prepare failed: ' . $conn->error]);
-        exit;
-    }
+    $d->bind_param('is', $del_id, $username);
+    $d->execute();
+    echo json_encode(['success' => $d->affected_rows > 0]);
+    exit;
 }
 
 // ==========================
-// SAVE GRADES IF POSTED
-// Improved: use record id when available and skip empty subject rows to avoid invisible entries
+// SAVE GRADES
 // ==========================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['grades']) && is_array($_POST['grades'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['grades'])) {
     foreach ($_POST['grades'] as $data) {
-        // Trim and escape values
-        $id = isset($data['id']) ? intval($data['id']) : 0;
-        $subject = isset($data['subject']) ? trim($conn->real_escape_string($data['subject'])) : '';
-        $instructor = isset($data['instructor']) ? trim($conn->real_escape_string($data['instructor'])) : '';
 
-        // Skip rows without a subject (these create empty-looking rows)
+        $id = isset($data['id']) ? intval($data['id']) : 0;
+        $subject = trim($data['subject'] ?? '');
+        $instructor = trim($data['instructor'] ?? '');
+
         if ($subject === '') continue;
 
-        $prelim  = isset($data['prelim']) && $data['prelim'] !== '' ? floatval($data['prelim']) : 0;
-        $prelim = max(0, min(100, $prelim));
-        $midterm = isset($data['midterm']) && $data['midterm'] !== '' ? floatval($data['midterm']) : 0;
-        $midterm = max(0, min(100, $midterm));
-        $finals  = isset($data['finals']) && $data['finals'] !== '' ? floatval($data['finals']) : 0;
-        $finals = max(0, min(100, $finals));
+        $prelim  = floatval($data['prelim'] ?? 0);
+        $midterm = floatval($data['midterm'] ?? 0);
+        $finals  = floatval($data['finals'] ?? 0);
 
-        $gradesEntered = [$prelim, $midterm, $finals];
-        $average = !empty($gradesEntered) ? round(array_sum($gradesEntered) / count($gradesEntered), 2) : 0;
+        $average = round(($prelim + $midterm + $finals) / 3, 2);
         $remarks = $average >= 75 ? 'Passed' : 'Failed';
 
         if ($id > 0) {
-            // Update by id (reliable even if subject text changed)
-            $u = $conn->prepare("UPDATE grades SET subject = ?, instructor = ?, prelim = ?, midterm = ?, finals = ?, average = ?, remarks = ? WHERE id = ? AND username = ?");
-            if ($u) {
-                // Types: subject (s), instructor (s), prelim (d), midterm (d), finals (d), average (d), remarks (s), id (i), username (s)
-                $u->bind_param('ssddddsis', $subject, $instructor, $prelim, $midterm, $finals, $average, $remarks, $id, $username);
-                if (!$u->execute()) {
-                    echo "<div class='alert alert-danger'>Error updating $subject: " . htmlspecialchars($u->error) . "</div>";
-                }
-                $u->close();
-            } else {
-                echo "<div class='alert alert-danger'>Prepare failed: " . htmlspecialchars($conn->error) . "</div>";
-            }
+            $u = $conn->prepare(
+                "UPDATE grades 
+                 SET prelim=?, midterm=?, finals=?, average=?, remarks=? 
+                 WHERE id=? AND username=?"
+            );
+            $u->bind_param('ddddsis', $prelim, $midterm, $finals, $average, $remarks, $id, $username);
+            $u->execute();
+            $u->close();
         } else {
-            // Insert new record
-            $ins = $conn->prepare("INSERT INTO grades (username, subject, instructor, prelim, midterm, finals, average, remarks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-            if ($ins) {
-                // Types: username (s), subject (s), instructor (s), prelim (d), midterm (d), finals (d), average (d), remarks (s)
-                $ins->bind_param('sssdddds', $username, $subject, $instructor, $prelim, $midterm, $finals, $average, $remarks);
-                if (!$ins->execute()) {
-                    echo "<div class='alert alert-danger'>Error inserting $subject: " . htmlspecialchars($ins->error) . "</div>";
-                }
-                $ins->close();
-            } else {
-                echo "<div class='alert alert-danger'>Prepare failed: " . htmlspecialchars($conn->error) . "</div>";
-            }
+            $i = $conn->prepare(
+                "INSERT INTO grades 
+                (username, subject, instructor, prelim, midterm, finals, average, remarks)
+                VALUES (?,?,?,?,?,?,?,?)"
+            );
+            $i->bind_param('sssdddds', $username, $subject, $instructor, $prelim, $midterm, $finals, $average, $remarks);
+            $i->execute();
+            $i->close();
         }
     }
 
-    // Use Post-Redirect-Get to avoid duplicate client-side alerts: set session status and redirect
     $_SESSION['status'] = 'Grades saved successfully!';
-    header('Location: view_grades.php?username=' . urlencode($username));
+    header("Location: view_grades.php?username=" . urlencode($username));
     exit;
 }
 
 // ==========================
 // FETCH GRADES
 // ==========================
-$grades_sql = "SELECT id, subject, instructor, prelim, midterm, finals, average, remarks FROM grades WHERE username='$username' ORDER BY subject";
-$grades_result = $conn->query($grades_sql);
-
 $grades = [];
-if ($grades_result && $grades_result->num_rows > 0) {
-    while ($row = $grades_result->fetch_assoc()) $grades[] = $row;
-}
+$g = $conn->query("SELECT * FROM grades WHERE username='$username' ORDER BY subject");
+while ($row = $g->fetch_assoc()) $grades[] = $row;
 ?>
 
 <?php include __DIR__ . '/sidebar.php'; ?>
 
 <div class="container my-4">
-    <?php if (isset($_SESSION['status'])): ?>
-      <div class="alert alert-success mt-2"><?php echo htmlspecialchars($_SESSION['status']); unset($_SESSION['status']); ?></div>
-    <?php endif; ?>
-    <h1>Student Grades</h1>
 
-    <!-- STUDENT INFO -->
-    <div class="card mb-4">
-        <div class="card-body">
-            <h5 class="card-title"><?= htmlspecialchars($student['lastname'] . ', ' . $student['firstname']) ?></h5>
-            <p class="mb-1"><strong>Username:</strong> <?= htmlspecialchars($username) ?></p>
-            <p class="mb-1"><strong>Course:</strong> <?= htmlspecialchars($student['course']) ?></p>
-            <p class="mb-1"><strong>Year:</strong> <?= htmlspecialchars(ucwords(strtolower($student['year']))) ?></p>
-            <p class="mb-0"><strong>Section:</strong> <?= htmlspecialchars($student['section'] ?? '-') ?></p>
-        </div>
-    </div>
+<?php if (isset($_SESSION['status'])): ?>
+<div class="alert alert-success"><?= $_SESSION['status']; unset($_SESSION['status']); ?></div>
+<?php endif; ?>
 
-    <!-- GRADES FORM -->
-    <form method="post">
-        <div class="card">
-            <div class="card-body">
-                <h5 class="card-title">Grades</h5>
+<h3>Student Grades</h3>
 
-                <table class="table table-striped table-bordered" id="gradesTable">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>Subject</th>
-                            <th>Instructor</th>
-                            <th>Prelim</th>
-                            <th>Midterm</th>
-                            <th>Finals</th>
-                            <th>Average</th>
-                            <th>Remarks</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php $index = 0; ?>
-                        <?php if (!empty($grades)): ?>
-                            <?php foreach ($grades as $row): ?>
-                                <tr>
-                                    <td>
-                                    <input type="hidden" name="grades[<?= $index ?>][id]" value="<?= intval($row['id']) ?>">
-                                    <input type="text" name="grades[<?= $index ?>][subject]" class="form-control" value="<?= htmlspecialchars($row['subject']) ?>">
-                                </td>
-                                    <td><input type="text" name="grades[<?= $index ?>][instructor]" class="form-control" value="<?= htmlspecialchars($row['instructor']) ?>"></td>
-                                    <td><input type="number" step="0.01" min="0" max="100" name="grades[<?= $index ?>][prelim]" class="form-control gradeInput" value="<?= $row['prelim'] ?>"></td>
-                                    <td><input type="number" step="0.01" min="0" max="100" name="grades[<?= $index ?>][midterm]" class="form-control gradeInput" value="<?= $row['midterm'] ?>"></td>
-                                    <td><input type="number" step="0.01" min="0" max="100" name="grades[<?= $index ?>][finals]" class="form-control gradeInput" value="<?= $row['finals'] ?>"></td>
-                                    <td class="average"><?= $row['average'] ?></td>
-                                    <td class="remarks"><?= htmlspecialchars($row['remarks']) ?></td>
-                                    <td><button type="button" class="btn btn-danger btn-sm deleteRow" data-id="<?= intval($row['id']) ?>">Delete</button></td>
-                                </tr>
-                                <?php $index++; endforeach; ?>
-                        <?php else: ?>
-                            <tr>
-                                <td><input type="text" name="grades[0][subject]" class="form-control"></td>
-                                <td><input type="text" name="grades[0][instructor]" class="form-control"></td>
-                                <td><input type="number" step="0.01" min="0" max="100" name="grades[0][prelim]" class="form-control gradeInput"></td>
-                                <td><input type="number" step="0.01" min="0" max="100" name="grades[0][midterm]" class="form-control gradeInput"></td>
-                                <td><input type="number" step="0.01" min="0" max="100" name="grades[0][finals]" class="form-control gradeInput"></td>
-                                <td class="average"></td>
-                                <td class="remarks"></td>
-                                <td><button type="button" class="btn btn-danger btn-sm removeRow">Remove</button></td>
-                            </tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
-
-                <button type="button" class="btn btn-info mb-2" id="addRow">Add Subject</button>
-                <br>
-                <button type="submit" class="btn btn-success">Save Grades</button>
-                <a href="javascript:history.back()" class="btn btn-secondary">← Back</a>
-            </div>
-        </div>
-    </form>
+<div class="card mb-3">
+<div class="card-body">
+<strong><?= htmlspecialchars($student['lastname'] . ', ' . $student['firstname']) ?></strong><br>
+Course: <?= htmlspecialchars($student['course']) ?><br>
+Year: <?= htmlspecialchars($student['year']) ?><br>
+Section: <?= htmlspecialchars($student['section']) ?>
 </div>
+</div>
+
+<form method="post">
+<table class="table table-bordered table-striped">
+<thead class="table-dark">
+<tr>
+<th>Subject</th>
+<th>Instructor</th>
+<th>Prelim</th>
+<th>Midterm</th>
+<th>Finals</th>
+<th>Average</th>
+<th>Remarks</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+
+<?php $index = 0; ?>
+
+<?php if (!empty($grades)): ?>
+<?php foreach ($grades as $row): ?>
+<tr>
+<td>
+<input type="hidden" name="grades[<?= $index ?>][id]" value="<?= $row['id'] ?>">
+<input type="hidden" name="grades[<?= $index ?>][subject]" value="<?= htmlspecialchars($row['subject']) ?>">
+<?= htmlspecialchars($row['subject']) ?>
+</td>
+
+<td>
+<input type="hidden" name="grades[<?= $index ?>][instructor]" value="<?= htmlspecialchars($row['instructor']) ?>">
+<?= htmlspecialchars($row['instructor']) ?>
+</td>
+
+<td><input type="number" name="grades[<?= $index ?>][prelim]" value="<?= $row['prelim'] ?>" class="form-control"></td>
+<td><input type="number" name="grades[<?= $index ?>][midterm]" value="<?= $row['midterm'] ?>" class="form-control"></td>
+<td><input type="number" name="grades[<?= $index ?>][finals]" value="<?= $row['finals'] ?>" class="form-control"></td>
+
+<td><?= $row['average'] ?></td>
+<td><?= $row['remarks'] ?></td>
+
+<td>
+<button type="button" class="btn btn-danger btn-sm deleteRow" data-id="<?= $row['id'] ?>">Delete</button>
+</td>
+</tr>
+<?php $index++; endforeach; ?>
+
+<?php else: ?>
+<?php foreach ($subjects as $s): ?>
+<tr>
+<td>
+<input type="hidden" name="grades[<?= $index ?>][subject]" value="<?= htmlspecialchars($s['name']) ?>">
+<?= htmlspecialchars($s['name']) ?>
+</td>
+
+<td>
+<input type="hidden" name="grades[<?= $index ?>][instructor]" value="<?= htmlspecialchars($s['instructor']) ?>">
+<?= htmlspecialchars($s['instructor']) ?>
+</td>
+
+<td><input type="number" name="grades[<?= $index ?>][prelim]" class="form-control"></td>
+<td><input type="number" name="grades[<?= $index ?>][midterm]" class="form-control"></td>
+<td><input type="number" name="grades[<?= $index ?>][finals]" class="form-control"></td>
+
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<?php $index++; endforeach; ?>
+<?php endif; ?>
+
+</tbody>
+</table>
+
+<button type="submit" class="btn btn-success">Save Grades</button>
+<a href="javascript:history.back()" class="btn btn-secondary">← Back</a>
+
+</form>
+</div>
+
 
 <style>
 .fail { color: #fff; background-color: #dc3545; font-weight: bold; text-align: center; }
