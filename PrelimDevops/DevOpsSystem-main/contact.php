@@ -195,7 +195,7 @@ require_once __DIR__ . '/config/site.php';
           <input type="email" name="email" class="form-control mb-3" required>
 
           <!-- Message -->
-          <label>lagyu</label>
+          <label>Message</label>
           <textarea name="message" class="form-control mb-3" rows="4" required></textarea>
 
           <!-- Captcha -->
